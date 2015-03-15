@@ -1,0 +1,134 @@
+#!/usr/local/bin/python
+
+
+# Geoip locator by Annttu
+# Todo: location by whois
+
+import sys
+import os
+
+import urllib2
+import GeoIP
+import socket
+import argparse
+
+OUTPUT = \
+"""IP: %(ip)s
+Reverse: %(reverse_dns)s (%(reverse_status)s)
+Country(%(country_code)s): %(country_name)s
+Region: %(region_name)s
+City: %(city)s
+LatLon: %(latitude)s, %(longitude)s
+"""
+
+TABLE_HEAD = {'ip' : 'IP', 'country_code': 'Country Code', 'country_name': 'Country name', 'region_name': 'Region name', 'city': 'City', 'latitude': 'Latitude', 'longitude': 'Longitude', 'reverse_dns': 'Reverse DNS', 'reverse_status': 'Reverse status'}
+TABLE_OUTPUT = "%(ip)s | %(country_code)s | %(country_name)s | %(region_name)s | %(city)s | %(latitude)s | %(longitude)s | %(reverse_dns)s | %(reverse_status)s"
+
+class GeoIPResolver(object):
+    def __init__(self):
+        self.city = GeoIP.open(os.path.expanduser('~/.geoip/city.dat'), GeoIP.GEOIP_MEMORY_CACHE)
+        self.country = GeoIP.open(os.path.expanduser('~/.geoip/country.dat'),
+                                     GeoIP.GEOIP_MEMORY_CACHE)
+        if hasattr(socket, 'setdefaulttimeout'):
+            socket.setdefaulttimeout(5)
+        if hasattr(socket, 'settimeout'):
+            socket.settimeout(5)
+
+
+    def _is_ip(self, record):
+        if not len(record.split('.')) == 4:
+            return False
+        try:
+            for i in record.split('.'):
+                if len(i) > 3 or len(i) < 1:
+                    return False
+                int(i)
+            return True
+        except ValueError:
+            return False
+
+    def get_record(self, record):
+        retval = None
+        if self._is_ip(record):
+            retval = self.prettify(self.get_by_ip(record), record)
+        else:
+            try:
+                ip = socket.gethostbyname(record)
+                retval = self.prettify(self.get_by_name(record), ip)
+            except socket.gaierror:
+                retval = self.prettify(self.get_by_name(record), record)
+        return retval
+
+    def get_by_ip(self, ip):
+        retval = self.city.record_by_addr(str(ip))
+        if not retval:
+            retval = {'country_code': self.country.country_code_by_addr(str(ip)),
+                      'country_name': self.country.country_name_by_addr(str(ip))
+                     }
+        return retval
+
+    def get_by_name(self, record):
+        retval = self.city.record_by_name(str(record))
+        if not retval:
+            retval = {'country_code': self.country.country_code_by_name(str(record)),
+                      'country_name': self.country.country_name_by_name(str(record))
+                     }
+
+        return retval
+
+    def get_reverse(self, ip=None):
+        try:
+            reverse, alias, addresslist = socket.gethostbyaddr(ip)
+        except socket.herror:
+            return ('', 'ERROR')
+        except socket.gaierror:
+            return ('', 'ERROR')
+        # Test if reverse match ip
+        try:
+            addrs = socket.getaddrinfo(reverse, None)
+        except socket.gaierror:
+            return (reverse, 'Dont match, failed!')
+        for addr in addrs:
+            if addr[4][0] == ip:
+                return (reverse, 'OK')
+        return (reverse, 'Dont match!')
+
+    def prettify(self, data, ip=None):
+        mydata = {}
+        if type(data) != type(mydata):
+            data = {}
+        keys = ['city', 'region_name', 'longitude', 'latitude',
+                'country_code', 'country_name']
+        for k in keys:
+            if k not in data:
+                mydata[k] = '??'
+            elif isinstance(data[k], str):
+                mydata[k] = data[k].decode("latin-1").encode("utf-8")
+            else:
+                mydata[k] = data[k]
+        mydata['ip'] = ip
+        mydata['reverse_dns'], mydata['reverse_status'] = self.get_reverse(ip)
+        return mydata
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='GeoIP resolver')
+    parser.add_argument('ips', metavar='IP', type=str, nargs='*',
+                        help='IPs to resolve')
+    parser.add_argument('--table', dest='table', action='store_true',
+                       default=False,
+                       help='Show result on table format, row per IP')
+    args = parser.parse_args()
+    g = GeoIPResolver()
+    if args.table:
+        OUTPUT = TABLE_OUTPUT
+        print(TABLE_OUTPUT % TABLE_HEAD)
+    for ip in args.ips:
+        if ip == '-':
+            for line in sys.stdin.readlines():
+                line = line.strip().strip('\n').strip()
+                print(OUTPUT % g.get_record(line))
+        else:
+            print(OUTPUT % g.get_record(ip))
+    if not args.ips:
+        ip = urllib2.urlopen('http://data.kapsi.fi/ip').read()
+        print(OUTPUT % g.get_record(ip))
